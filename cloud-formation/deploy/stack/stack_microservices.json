@@ -1,0 +1,663 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+
+    "Description": "Sub Stack to deploy several microservices.",
+
+    "Parameters": {
+
+        "PublicSubnet1Id": {
+            "Description": "Public subnet 1 id",
+            "Type": "AWS::EC2::Subnet::Id"
+        },
+
+        "PublicSubnet2Id": {
+            "Description": "Public subnet 2 id",
+            "Type": "AWS::EC2::Subnet::Id"
+        },
+
+        "PublicSubnet3Id": {
+            "Description": "Public subnet 3 id",
+            "Type": "AWS::EC2::Subnet::Id"
+        },
+
+        "KeyName": {
+            "Description": "keypair",
+            "Type": "AWS::EC2::KeyPair::KeyName"
+        },
+
+        "WebappLoadBalancerSecurityGroup" : {
+            "Description" : "Web Servers Security Group",
+            "Type" : "String"
+        },
+
+        "Environment" : {
+            "Description" : "Environment for this deployment",
+            "Type" : "String"
+        },
+
+        "EcsServiceRole" : {
+            "Description" : "Ecs Service Role",
+            "Type": "String"
+        },
+
+        "EcsCluster" : {
+            "Description" : "Ecs Cluster",
+            "Type": "String"
+        },
+
+        "EurekaUrl" : {
+            "Description" : "Eureka Servers LoadBalancer Url",
+            "Type" : "String"
+        },
+
+        "AccountNumber": {
+            "Description": "Amazon Account Number",
+            "Type": "String"
+        },
+
+        "LogCollector" : {
+            "Default": "cloudwatch",
+            "Description" : "Log collector that this stack will be using, either CloudWatch Logs or SumoLogic.",
+            "Type" : "String",
+            "AllowedValues" : [ "cloudwatch", "sumologic" ],
+            "ConstraintDescription" : "Must be one of the following - cloudwatch | sumologic"
+        },
+
+        "SumoAccessID": {
+            "Description": "Summo Access ID",
+            "Type": "String",
+            "Default" : ""
+        },
+
+        "SumoAccessKey": {
+            "Description": "Summo Access Key",
+            "Type": "String",
+            "Default" : ""
+        }
+    },
+
+    "Conditions": {
+        "UseCloudWatch": { "Fn::Equals" : [ { "Ref" : "LogCollector" }, "cloudwatch" ] },
+        "UseSumoLogic" : { "Fn::Equals" : [ { "Ref" : "LogCollector" }, "sumologic" ] }
+    },
+
+    "Resources": {
+
+        "ConfigServerCloudWatchTask": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Condition" : "UseCloudWatch",
+            "Properties": {
+                "ContainerDefinitions": [
+                    {
+                        "Name": "config-server",
+                        "Image": { "Fn::Join" : ["", [{ "Ref" : "AccountNumber" }, ".dkr.ecr.us-east-1.amazonaws.com/microservices/config-server:latest"]]},
+                        "Memory": "1024",
+                        "Environment": [
+                            {
+                                "Name": "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE",
+                                "Value": {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "http://",
+                                            {
+                                                "Ref" : "EurekaUrl"
+                                            },
+                                            ":8761/eureka/"
+                                        ]
+                                    ]
+                                }
+                            },
+                            {
+                                "Name": "EUREKA_INSTANCE_HOSTNAME",
+                                "Value": "${local-ipv4:N/A}"
+                            },
+                            {
+                                "Name": "SPRING_PROFILES_ACTIVE",
+                                "Value": "syslog"
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 9000,
+                                "ContainerPort": 9000
+                            }
+                        ],
+                        "Links": [
+                            "logs"
+                        ]
+                    },
+                    {
+                        "Name": "logs",
+                        "Image": {"Fn::Join": ["",[{"Ref": "AccountNumber"},".dkr.ecr.us-east-1.amazonaws.com/microservices/ecs-cloudwatch-logs:latest"]]},
+                        "Memory": "64",
+                        "MountPoints": [
+                            {
+                                "SourceVolume": "ecs_instance_logs",
+                                "ContainerPath":"/mnt/ecs_instance_logs"
+                            }
+                        ]
+                    }
+                ],
+                "Volumes": [
+                    {
+                        "Name": "ecs_instance_logs",
+                        "Host": {
+                            "SourcePath": "/var/log"
+                        }
+                    }
+                ]
+            }
+        },
+
+        "ConfigServerSumoLogicTask": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Condition" : "UseSumoLogic",
+            "Properties": {
+                "ContainerDefinitions": [
+                    {
+                        "Name": "config-server",
+                        "Image": { "Fn::Join" : ["", [{ "Ref" : "AccountNumber" }, ".dkr.ecr.us-east-1.amazonaws.com/microservices/config-server:latest"]]},
+                        "Memory": "1024",
+                        "Environment": [
+                            {
+                                "Name": "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE",
+                                "Value": {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "http://",
+                                            {
+                                                "Ref" : "EurekaUrl"
+                                            },
+                                            ":8761/eureka/"
+                                        ]
+                                    ]
+                                }
+                            },
+                            {
+                                "Name": "EUREKA_INSTANCE_HOSTNAME",
+                                "Value": "${local-ipv4:N/A}"
+                            },
+                            {
+                                "Name": "SPRING_PROFILES_ACTIVE",
+                                "Value": "syslog"
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 9000,
+                                "ContainerPort": 9000
+                            }
+                        ],
+                        "Links": [
+                            "logs"
+                        ]
+                    },
+                    {
+                        "Name": "logs",
+                        "Image": "sumologic/collector:latest-syslog",
+                        "Memory": "128",
+                        "Environment": [
+                            {
+                                "Name": "SUMO_ACCESS_ID",
+                                "Value": { "Ref" : "SumoAccessID"}
+                            },
+                            {
+                                "Name": "SUMO_ACCESS_KEY",
+                                "Value":  { "Ref" : "SumoAccessKey"}
+                            },
+                            {
+                                "Name": "SUMO_COLLECTOR_NAME",
+                                "Value" : {"Fn::Join": ["",[ {"Ref": "Environment"}, "-ConfigServer" ]]}
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 514,
+                                "ContainerPort": 514
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+
+        "ConfigServerService": {
+            "Type": "AWS::ECS::Service",
+            "Properties": {
+                "Cluster": {
+                    "Ref": "EcsCluster"
+                },
+                "DesiredCount": "1",
+                "TaskDefinition": {
+                    "Fn::If": [
+                        "UseCloudWatch",{ "Ref": "ConfigServerCloudWatchTask" },{ "Ref": "ConfigServerSumoLogicTask" }
+                    ]
+                }
+            }
+        },
+
+        "WebappLoadBalancer": {
+            "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+            "Properties": {
+                "CrossZone": true,
+                "Subnets": [
+                    {
+                        "Ref": "PublicSubnet1Id"
+                    },
+                    {
+                        "Ref": "PublicSubnet2Id"
+                    },
+                    {
+                        "Ref": "PublicSubnet3Id"
+                    }
+                ],
+                "Listeners": [
+                    {
+                        "LoadBalancerPort": "80",
+                        "InstancePort": "80",
+                        "Protocol": "HTTP"
+                    }
+                ],
+                "HealthCheck": {
+                    "Target": "HTTP:80/health",
+                    "HealthyThreshold": "2",
+                    "UnhealthyThreshold": "10",
+                    "Interval": "30",
+                    "Timeout": "5"
+                },
+                "SecurityGroups": [
+                    {
+                        "Ref": "WebappLoadBalancerSecurityGroup"
+                    }
+                ]
+            }
+        },
+
+        "WebappCloudWatchTask": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Condition" : "UseCloudWatch",
+            "Properties": {
+                "ContainerDefinitions": [
+                    {
+                        "Name": "webapp",
+                        "Image": { "Fn::Join" : ["", [{ "Ref" : "AccountNumber" }, ".dkr.ecr.us-east-1.amazonaws.com/microservices/webapp:latest"]]},
+                        "Memory": "1024",
+                        "Environment": [
+                            {
+                                "Name": "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE",
+                                "Value": {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "http://",
+                                            {
+                                                "Ref" : "EurekaUrl"
+                                            },
+                                            ":8761/eureka/"
+                                        ]
+                                    ]
+                                }
+                            },
+                            {
+                                "Name": "EUREKA_INSTANCE_HOSTNAME",
+                                "Value": "${local-ipv4:N/A}"
+                            },
+                            {
+                                "Name": "SPRING_CLOUD_CONFIG_DISCOVERY_ENABLED",
+                                "Value": "true"
+                            },
+                            {
+                                "Name": "SPRING_CLOUD_CONFIG_DISCOVERY_SERVICEID",
+                                "Value": "config-server"
+                            },
+                            {
+                                "Name": "SPRING_PROFILES_ACTIVE",
+                                "Value": "syslog"
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 80,
+                                "ContainerPort": 8080
+                            }
+                        ],
+                        "Links": [
+                            "logs"
+                        ]
+                    },
+                    {
+                        "Name": "logs",
+                        "Image": {"Fn::Join": ["",[{"Ref": "AccountNumber"},".dkr.ecr.us-east-1.amazonaws.com/microservices/ecs-cloudwatch-logs:latest"]]},
+                        "Memory": "64",
+                        "MountPoints": [
+                            {
+                                "SourceVolume": "ecs_instance_logs",
+                                "ContainerPath":"/mnt/ecs_instance_logs"
+                            }
+                        ]
+                    }
+                ],
+                "Volumes": [
+                    {
+                        "Name": "ecs_instance_logs",
+                        "Host": {
+                            "SourcePath": "/var/log"
+                        }
+                    }
+                ]
+            }
+        },
+
+        "WebappSumoLogicTask": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Condition" : "UseSumoLogic",
+            "Properties": {
+                "ContainerDefinitions": [
+                    {
+                        "Name": "webapp",
+                        "Image": { "Fn::Join" : ["", [{ "Ref" : "AccountNumber" }, ".dkr.ecr.us-east-1.amazonaws.com/microservices/webapp:latest"]]},
+                        "Memory": "1024",
+                        "Environment": [
+                            {
+                                "Name": "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE",
+                                "Value": {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "http://",
+                                            {
+                                                "Ref" : "EurekaUrl"
+                                            },
+                                            ":8761/eureka/"
+                                        ]
+                                    ]
+                                }
+                            },
+                            {
+                                "Name": "EUREKA_INSTANCE_HOSTNAME",
+                                "Value": "${local-ipv4:N/A}"
+                            },
+                            {
+                                "Name": "SPRING_CLOUD_CONFIG_DISCOVERY_ENABLED",
+                                "Value": "true"
+                            },
+                            {
+                                "Name": "SPRING_CLOUD_CONFIG_DISCOVERY_SERVICEID",
+                                "Value": "config-server"
+                            },
+                            {
+                                "Name": "SPRING_PROFILES_ACTIVE",
+                                "Value": "syslog"
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 80,
+                                "ContainerPort": 8080
+                            }
+                        ],
+                        "Links": [
+                            "logs"
+                        ]
+                    },
+                    {
+                        "Name": "logs",
+                        "Image": "sumologic/collector:latest-syslog",
+                        "Memory": "128",
+                        "Environment": [
+                            {
+                                "Name": "SUMO_ACCESS_ID",
+                                "Value": { "Ref" : "SumoAccessID"}
+                            },
+                            {
+                                "Name": "SUMO_ACCESS_KEY",
+                                "Value": { "Ref" : "SumoAccessKey"}
+                            },
+                            {
+                                "Name": "SUMO_COLLECTOR_NAME",
+                                "Value" : {"Fn::Join": ["",[ {"Ref": "Environment"}, "-WebApp" ]]}
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 514,
+                                "ContainerPort": 514
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+
+        "WebappService": {
+            "Type": "AWS::ECS::Service",
+            "DependsOn": [ "ConfigServerService" ],
+            "Properties": {
+                "Cluster": {
+                    "Ref": "EcsCluster"
+                },
+                "DesiredCount": "1",
+                "LoadBalancers": [
+                    {
+                        "ContainerName": "webapp",
+                        "ContainerPort": "8080",
+                        "LoadBalancerName": {
+                            "Ref": "WebappLoadBalancer"
+                        }
+                    }
+                ],
+                "Role": {
+                    "Ref": "EcsServiceRole"
+                },
+                "TaskDefinition": {
+                    "Fn::If": [
+                        "UseCloudWatch",{ "Ref": "WebappCloudWatchTask" },{ "Ref": "WebappSumoLogicTask" }
+                    ]
+                }
+            }
+        },
+
+        "WeatherServiceCloudWatchTask": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Condition" : "UseCloudWatch",
+            "Properties": {
+                "ContainerDefinitions": [
+                    {
+                        "Name": "service",
+                        "Image": { "Fn::Join" : ["", [{ "Ref" : "AccountNumber" }, ".dkr.ecr.us-east-1.amazonaws.com/microservices/weather-service:latest"]]},
+                        "Memory": "1024",
+                        "Environment": [
+                            {
+                                "Name": "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE",
+                                "Value": {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "http://",
+                                            {
+                                                "Ref" : "EurekaUrl"
+                                            },
+                                            ":8761/eureka/"
+                                        ]
+                                    ]
+                                }
+                            },
+                            {
+                                "Name": "EUREKA_INSTANCE_HOSTNAME",
+                                "Value": "${local-ipv4:N/A}"
+                            },
+                            {
+                                "Name": "SPRING_CLOUD_CONFIG_DISCOVERY_ENABLED",
+                                "Value": "true"
+                            },
+                            {
+                                "Name": "SPRING_CLOUD_CONFIG_DISCOVERY_SERVICEID",
+                                "Value": "config-server"
+                            },
+                            {
+                                "Name": "SPRING_PROFILES_ACTIVE",
+                                "Value": "syslog"
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 8081,
+                                "ContainerPort": 8081
+                            }
+                        ],
+                        "Links": [
+                            "logs"
+                        ]
+                    },
+                    {
+                        "Name": "logs",
+                        "Image": {"Fn::Join": ["",[{"Ref": "AccountNumber"},".dkr.ecr.us-east-1.amazonaws.com/microservices/ecs-cloudwatch-logs:latest"]]},
+                        "Memory": "64",
+                        "MountPoints": [
+                            {
+                                "SourceVolume": "ecs_instance_logs",
+                                "ContainerPath":"/mnt/ecs_instance_logs"
+                            }
+                        ]
+                    }
+                ],
+                "Volumes": [
+                    {
+                        "Name": "ecs_instance_logs",
+                        "Host": {
+                            "SourcePath": "/var/log"
+                        }
+                    }
+                ]
+            }
+        },
+
+        "WeatherServiceSumoLogicTask": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Condition" : "UseSumoLogic",
+            "Properties": {
+                "ContainerDefinitions": [
+                    {
+                        "Name": "service",
+                        "Image": { "Fn::Join" : ["", [{ "Ref" : "AccountNumber" }, ".dkr.ecr.us-east-1.amazonaws.com/microservices/weather-service:latest"]]},
+                        "Memory": "1024",
+                        "Environment": [
+                            {
+                                "Name": "EUREKA_CLIENT_SERVICEURL_DEFAULTZONE",
+                                "Value": {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "http://",
+                                            {
+                                                "Ref" : "EurekaUrl"
+                                            },
+                                            ":8761/eureka/"
+                                        ]
+                                    ]
+                                }
+                            },
+                            {
+                                "Name": "EUREKA_INSTANCE_HOSTNAME",
+                                "Value": "${local-ipv4:N/A}"
+                            },
+                            {
+                                "Name": "SPRING_CLOUD_CONFIG_DISCOVERY_ENABLED",
+                                "Value": "true"
+                            },
+                            {
+                                "Name": "SPRING_CLOUD_CONFIG_DISCOVERY_SERVICEID",
+                                "Value": "config-server"
+                            },
+                            {
+                                "Name": "SPRING_PROFILES_ACTIVE",
+                                "Value": "syslog"
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 8081,
+                                "ContainerPort": 8081
+                            }
+                        ],
+                        "Links": [
+                            "logs"
+                        ]
+                    },
+                    {
+                        "Name": "logs",
+                        "Image": "sumologic/collector:latest-syslog",
+                        "Memory": "128",
+                        "Environment": [
+                            {
+                                "Name": "SUMO_ACCESS_ID",
+                                "Value": { "Ref" : "SumoAccessID"}
+                            },
+                            {
+                                "Name": "SUMO_ACCESS_KEY",
+                                "Value": { "Ref" : "SumoAccessKey"}
+                            },
+                            {
+                                "Name": "SUMO_COLLECTOR_NAME",
+                                "Value" : {"Fn::Join": ["",[ {"Ref": "Environment"}, "-WeatherService" ]]}
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 514,
+                                "ContainerPort": 514
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+
+        "WeatherServiceService": {
+            "Type": "AWS::ECS::Service",
+            "DependsOn": [ "ConfigServerService" ],
+            "Properties": {
+                "Cluster": {
+                    "Ref": "EcsCluster"
+                },
+                "DesiredCount": "1",
+                "TaskDefinition": {
+                    "Fn::If": [
+                        "UseCloudWatch",{ "Ref": "WeatherServiceCloudWatchTask" },{ "Ref": "WeatherServiceSumoLogicTask" }
+                    ]
+                }
+            }
+        }
+    },
+
+    "Outputs": {
+        "WebappUrl": {
+            "Value": {
+                "Fn::GetAtt": [
+                    "WebappLoadBalancer",
+                    "DNSName"
+                ]
+            }
+        },
+        "WebappLoadBalancerHostZoneNameId": {
+            "Description": "Webapp Load Balancer Host Zone Name ID",
+            "Value": {
+                "Fn::GetAtt": [
+                    "WebappLoadBalancer",
+                    "CanonicalHostedZoneNameID"
+                ]
+            }
+        },
+        "WebappLoadBalancerHostZoneName": {
+            "Description": "Webapp Load Balancer Host Zone Name",
+            "Value": {
+                "Fn::GetAtt": [
+                    "WebappLoadBalancer",
+                    "CanonicalHostedZoneName"
+                ]
+            }
+        }
+    }
+}

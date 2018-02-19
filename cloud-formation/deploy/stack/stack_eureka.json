@@ -1,0 +1,258 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+
+    "Description": "Sub Stack to create the Service Discovery Servers (Eureka)",
+
+    "Parameters": {
+
+        "PrivateSubnet1Id": {
+            "Description": "Private subnet 1 Id",
+            "Type": "AWS::EC2::Subnet::Id"
+        },
+
+        "PrivateSubnet2Id": {
+            "Description": "Private subnet 2 Id",
+            "Type": "AWS::EC2::Subnet::Id"
+        },
+
+        "PrivateSubnet3Id": {
+            "Description": "Private subnet 3 Id",
+            "Type": "AWS::EC2::Subnet::Id"
+        },
+
+        "KeyName": {
+            "Description": "keypair",
+            "Type": "AWS::EC2::KeyPair::KeyName"
+        },
+
+        "EurekaServerLoadBalancerSecurityGroup" : {
+            "Description" : "Eureka Servers Security Group",
+            "Type" : "String"
+        },
+
+        "Environment" : {
+            "Description" : "Environment for this deployment",
+            "Type" : "String"
+        },
+
+        "EcsServiceRole" : {
+            "Description" : "Ecs Service Role",
+            "Type": "String"
+        },
+
+        "EcsCluster" : {
+            "Description" : "Ecs Cluster",
+            "Type": "String"
+        },
+
+        "AccountNumber": {
+            "Description": "Amazon Account Number",
+            "Type": "String"
+        },
+
+        "LogCollector" : {
+            "Default": "cloudwatch",
+            "Description" : "Log collector that this stack will be using, either CloudWatch Logs or SumoLogic.",
+            "Type" : "String",
+            "AllowedValues" : [ "cloudwatch", "sumologic" ],
+            "ConstraintDescription" : "Must be one of the following - cloudwatch | sumologic"
+        },
+
+        "SumoAccessID": {
+            "Description": "Summo Access ID",
+            "Type": "String",
+            "Default" : ""
+        },
+
+        "SumoAccessKey": {
+            "Description": "Summo Access Key",
+            "Type": "String",
+            "Default" : ""
+        }
+
+    },
+    "Conditions": {
+        "UseCloudWatch": { "Fn::Equals" : [ { "Ref" : "LogCollector" }, "cloudwatch" ] },
+        "UseSumoLogic": { "Fn::Equals" : [ { "Ref" : "LogCollector" }, "sumologic" ] }
+    },
+    "Resources": {
+
+        "EurekaServerLoadBalancer": {
+            "Type": "AWS::ElasticLoadBalancing::LoadBalancer",
+            "Properties": {
+                "CrossZone": true,
+                "Scheme" : "internal",
+                "Subnets": [
+                    {
+                        "Ref": "PrivateSubnet1Id"
+                    },
+                    {
+                        "Ref": "PrivateSubnet2Id"
+                    },
+                    {
+                        "Ref": "PrivateSubnet3Id"
+                    }
+                ],
+                "Listeners": [
+                    {
+                        "LoadBalancerPort": "8761",
+                        "InstancePort": "8761",
+                        "Protocol": "HTTP"
+                    }
+                ],
+                "HealthCheck": {
+                    "Target": "HTTP:8761/health",
+                    "HealthyThreshold": "2",
+                    "UnhealthyThreshold": "10",
+                    "Interval": "30",
+                    "Timeout": "5"
+                },
+                "SecurityGroups": [
+                    {
+                        "Ref": "EurekaServerLoadBalancerSecurityGroup"
+                    }
+                ]
+            }
+        },
+
+        "EurekaServerCloudWatchTask": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Condition" : "UseCloudWatch",
+            "Properties": {
+                "ContainerDefinitions": [
+                    {
+                        "Name": "eureka-server",
+                        "Image": { "Fn::Join" : ["", [{ "Ref" : "AccountNumber" }, ".dkr.ecr.us-east-1.amazonaws.com/microservices/eureka-server:latest"]]},
+                        "Memory": "1024",
+                        "Environment": [
+                            {
+                                "Name": "SPRING_PROFILES_ACTIVE",
+                                "Value": "syslog"
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 8761,
+                                "ContainerPort": 8761
+                            }
+                        ],
+                        "Links": [
+                            "logs"
+                        ]
+                    },
+                    {
+                        "Name": "logs",
+                        "Image": {"Fn::Join": ["",[{"Ref": "AccountNumber"},".dkr.ecr.us-east-1.amazonaws.com/microservices/ecs-cloudwatch-logs:latest"]]},
+                        "Memory": "64",
+                        "MountPoints": [
+                            {
+                                "SourceVolume": "ecs_instance_logs",
+                                "ContainerPath":"/mnt/ecs_instance_logs"
+                            }
+                        ]
+                    }
+                ],
+                "Volumes": [
+                    {
+                        "Name": "ecs_instance_logs",
+                        "Host": {
+                            "SourcePath": "/var/log"
+                        }
+                    }
+                ]
+            }
+        },
+
+        "EurekaServerSumoLogicTask": {
+            "Type": "AWS::ECS::TaskDefinition",
+            "Condition" : "UseSumoLogic",
+            "Properties": {
+                "ContainerDefinitions": [
+                    {
+                        "Name": "eureka-server",
+                        "Image": { "Fn::Join" : ["", [{ "Ref" : "AccountNumber" }, ".dkr.ecr.us-east-1.amazonaws.com/microservices/eureka-server:latest"]]},
+                        "Memory": "1024",
+                        "Environment": [
+                            {
+                                "Name": "SPRING_PROFILES_ACTIVE",
+                                "Value": "syslog"
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 8761,
+                                "ContainerPort": 8761
+                            }
+                        ],
+                        "Links": [
+                            "logs"
+                        ]
+                    },
+                    {
+                        "Name": "logs",
+                        "Image": "sumologic/collector:latest-syslog",
+                        "Memory": "128",
+                        "Environment": [
+                            {
+                                "Name": "SUMO_ACCESS_ID",
+                                "Value": { "Ref" : "SumoAccessID"}
+                            },
+                            {
+                                "Name": "SUMO_ACCESS_KEY",
+                                "Value": { "Ref" : "SumoAccessKey"}
+                            },
+                            {
+                                "Name": "SUMO_COLLECTOR_NAME",
+                                "Value" : {"Fn::Join": ["",[ {"Ref": "Environment"}, "-Eureka" ]]}
+                            }
+                        ],
+                        "PortMappings": [
+                            {
+                                "HostPort": 514,
+                                "ContainerPort": 514
+                            }
+                        ]
+                    }
+                ]
+            }
+        },
+
+        "EurekaServerService": {
+            "Type": "AWS::ECS::Service",
+            "Properties": {
+                "Cluster": {
+                    "Ref": "EcsCluster"
+                },
+                "DesiredCount": "1",
+                "LoadBalancers": [
+                    {
+                        "ContainerName": "eureka-server",
+                        "ContainerPort": "8761",
+                        "LoadBalancerName": {
+                            "Ref": "EurekaServerLoadBalancer"
+                        }
+                    }
+                ],
+                "Role": {
+                    "Ref": "EcsServiceRole"
+                },
+                "TaskDefinition": {
+                    "Fn::If": [
+                        "UseCloudWatch",{ "Ref": "EurekaServerCloudWatchTask" },{ "Ref": "EurekaServerSumoLogicTask" }
+                    ]
+                }
+            }
+        }
+
+    },
+    "Outputs": {
+        "EurekaUrl": {
+            "Value": {
+                "Fn::GetAtt": [
+                    "EurekaServerLoadBalancer",
+                    "DNSName"
+                ]
+            }
+        }
+    }
+}

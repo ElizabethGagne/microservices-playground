@@ -1,0 +1,467 @@
+{
+    "AWSTemplateFormatVersion": "2010-09-09",
+
+    "Description": "Sub Stack to create an ECS Cluster.",
+
+    "Mappings": {
+        "RegionMap": {
+            "us-east-1": {
+                "AMI": "ami-2b3b6041"
+            },
+            "us-west-1": {
+                "AMI": "ami-caf581aa"
+            },
+            "us-west-2" : {
+                "AMI": "ami-1ead497e"
+            }
+        }
+    },
+
+    "Parameters": {
+        "InstanceType": {
+            "Description": "The EC2 instance type inside ECS cluster.",
+            "Type": "String",
+            "Default": "t2.small"
+        },
+
+        "VpcId": {
+            "Description": "VPC Id",
+            "Type": "AWS::EC2::VPC::Id"
+        },
+
+        "ClusterSize": {
+            "Description": "ECS Cluster size",
+            "Type": "Number",
+            "Default": 5
+        },
+
+        "PrivateSubnet1Id": {
+            "Description": "Private subnet 1 Id",
+            "Type": "AWS::EC2::Subnet::Id"
+        },
+
+        "PrivateSubnet2Id": {
+            "Description": "Private subnet 2 Id",
+            "Type": "AWS::EC2::Subnet::Id"
+        },
+
+        "PrivateSubnet3Id": {
+            "Description": "Private subnet 3 Id",
+            "Type": "AWS::EC2::Subnet::Id"
+        },
+
+        "KeyName": {
+            "Description": "keypair",
+            "Type": "AWS::EC2::KeyPair::KeyName"
+        },
+
+        "EcsSecurityGroup" : {
+            "Description" : "ECS Security Group",
+            "Type" : "String"
+        },
+
+        "EurekaServerLoadBalancerSecurityGroup" : {
+            "Description" : "Eureka Servers Security Group",
+            "Type" : "String"
+        },
+
+        "WebappLoadBalancerSecurityGroup" : {
+            "Description" : "Web Servers Security Group",
+            "Type" : "String"
+        },
+
+        "Environment" : {
+            "Description" : "Environment for this deployment",
+            "Type" : "String"
+        },
+
+        "NewRelicLicenseKey" : {
+            "Description" : "NewRelic Licence Key",
+            "Type" : "String"
+        }
+    },
+
+    "Resources": {
+
+        "EcsCluster": {
+            "Type": "AWS::ECS::Cluster"
+        },
+
+        "ecs": {
+            "Type": "AWS::Logs::LogGroup",
+            "Properties": {
+                "RetentionInDays": 7
+            }
+        },
+
+        "EcsClusterAutoScalingGroup": {
+            "Type": "AWS::AutoScaling::AutoScalingGroup",
+            "Properties": {
+                "VPCZoneIdentifier": [
+                    {
+                        "Ref": "PrivateSubnet1Id"
+                    },
+                    {
+                        "Ref": "PrivateSubnet2Id"
+                    },
+                    {
+                        "Ref": "PrivateSubnet3Id"
+                    }
+                ],
+                "LaunchConfigurationName": {
+                    "Ref": "EcsClusterLaunchConfiguration"
+                },
+                "MinSize": {
+                    "Ref": "ClusterSize"
+                },
+                "MaxSize": {
+                    "Ref": "ClusterSize"
+                },
+                "DesiredCapacity": {
+                    "Ref": "ClusterSize"
+                },
+                "Tags": [
+                    {
+                        "Key": "Name",
+                        "Value": {
+                            "Fn::Join": [
+                                "",
+                                [
+                                    {
+                                        "Ref": "Environment"
+                                    },
+                                    "-EcsInstance"
+                                ]
+                            ]
+                        },
+                        "PropagateAtLaunch": "true"
+                    },
+                    {
+                        "Key": "role",
+                        "Value": "app",
+                        "PropagateAtLaunch": "true"
+                    },
+                    {
+                        "Key": "env",
+                        "Value": {
+                            "Ref": "Environment"
+                        },
+                        "PropagateAtLaunch": "true"
+                    }
+                ]
+            },
+            "UpdatePolicy": {
+                "AutoScalingRollingUpdate": {
+                    "MinInstancesInService": "1",
+                    "MaxBatchSize": "1",
+                    "PauseTime": "PT15M",
+                    "WaitOnResourceSignals": "true"
+                }
+            }
+        },
+
+        "EcsClusterLaunchConfiguration": {
+            "Type": "AWS::AutoScaling::LaunchConfiguration",
+            "Metadata": {
+                "AWS::CloudFormation::Init": {
+                    "config": {
+                        "packages" : {
+                            "rpm" : {
+                                "newrelic" : "https://yum.newrelic.com/pub/newrelic/el5/x86_64/newrelic-repo-5-3.noarch.rpm"
+                            },
+                            "yum" : {
+                                "newrelic-sysmond": []
+                            }
+                        },
+                        "commands": {
+                            "01_add_instance_to_cluster": {
+                                "command": {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "#!/bin/bash\n",
+                                            "echo ECS_CLUSTER=",
+                                            {
+                                                "Ref": "EcsCluster"
+                                            },
+                                            " >> /etc/ecs/ecs.config"
+                                        ]
+                                    ]
+                                }
+                            },
+                            "02_set_newrelic_license" : {
+                                "command" : {"Fn::Join": ["",["nrsysmond-config --set license_key=", {"Ref" :"NewRelicLicenseKey"} ]] }
+                            },
+                            "03_add_newrelic_user_to_docker_group" : {
+                                "command" : "usermod -a -G docker newrelic"
+                            },
+                            "04_configure_newrelic" : {
+                                "command" : {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "#!/bin/bash\n",
+                                            "HOSTNAME=$(/usr/bin/curl -s http://169.254.169.254/latest/meta-data/local-ipv4)\n",
+                                            "echo hostname=", {"Ref" : "Environment"}, "-$HOSTNAME", " >> /etc/newrelic/nrsysmond.cfg" ]]}
+                            } ,
+                            "05_start_newrelic" : {
+                                "command" : "/etc/init.d/newrelic-sysmond start"
+                            }
+                        },
+                        "files": {
+                            "/etc/cfn/cfn-hup.conf": {
+                                "content": {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "[main]\n",
+                                            "stack=",
+                                            {
+                                                "Ref": "AWS::StackId"
+                                            },
+                                            "\n",
+                                            "region=",
+                                            {
+                                                "Ref": "AWS::Region"
+                                            },
+                                            "\n"
+                                        ]
+                                    ]
+                                },
+                                "mode": "000400",
+                                "owner": "root",
+                                "group": "root"
+                            },
+                            "/etc/cfn/hooks.d/cfn-auto-reloader.conf": {
+                                "content": {
+                                    "Fn::Join": [
+                                        "",
+                                        [
+                                            "[cfn-auto-reloader-hook]\n",
+                                            "triggers=post.update\n",
+                                            "path=Resources.EcsClusterLaunchConfiguration.Metadata.AWS::CloudFormation::Init\n",
+                                            "action=/opt/aws/bin/cfn-init -v ",
+                                            "         --stack ",
+                                            {
+                                                "Ref": "AWS::StackName"
+                                            },
+                                            "         --resource EcsClusterLaunchConfiguration ",
+                                            "         --region ",
+                                            {
+                                                "Ref": "AWS::Region"
+                                            },
+                                            "\n",
+                                            "runas=root\n"
+                                        ]
+                                    ]
+                                }
+                            }
+                        },
+                        "services": {
+                            "sysvinit": {
+                                "cfn-hup": {
+                                    "enabled": "true",
+                                    "ensureRunning": "true",
+                                    "files": [
+                                        "/etc/cfn/cfn-hup.conf",
+                                        "/etc/cfn/hooks.d/cfn-auto-reloader.conf"
+                                    ]
+                                },
+                                "newrelic-sysmond": {
+                                    "enabled": "true",
+                                    "ensureRunning": "true"
+                                }
+                            }
+                        }
+                    }
+                }
+            },
+            "Properties": {
+                "ImageId": {
+                    "Fn::FindInMap": [
+                        "RegionMap",
+                        {
+                            "Ref": "AWS::Region"
+                        },
+                        "AMI"
+                    ]
+                },
+                "InstanceType": {
+                    "Ref": "InstanceType"
+                },
+                "IamInstanceProfile": {
+                    "Ref": "EcsInstanceProfile"
+                },
+                "KeyName": {
+                    "Ref": "KeyName"
+                },
+                "UserData": {
+                    "Fn::Base64": {
+                        "Fn::Join": [
+                            "",
+                            [
+                                "#!/bin/bash -xe\n",
+                                "yum install -y aws-cfn-bootstrap\n",
+                                "/opt/aws/bin/cfn-init -v ",
+                                "         --stack ",
+                                {
+                                    "Ref": "AWS::StackName"
+                                },
+                                "         --resource EcsClusterLaunchConfiguration ",
+                                "         --region ",
+                                {
+                                    "Ref": "AWS::Region"
+                                },
+                                "\n",
+                                "/opt/aws/bin/cfn-signal -e $? ",
+                                "         --stack ",
+                                {
+                                    "Ref": "AWS::StackName"
+                                },
+                                "         --resource EcsClusterAutoScalingGroup ",
+                                "         --region ",
+                                {
+                                    "Ref": "AWS::Region"
+                                },
+                                "\n"
+                            ]
+                        ]
+                    }
+                },
+                "SecurityGroups": [
+                    {
+                        "Ref": "EcsSecurityGroup"
+                    }
+                ]
+            }
+        },
+
+        "EcsServiceRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "ecs.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "ecs-service",
+                        "PolicyDocument": {
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "elasticloadbalancing:Describe*",
+                                        "elasticloadbalancing:DeregisterInstancesFromLoadBalancer",
+                                        "elasticloadbalancing:RegisterInstancesWithLoadBalancer",
+                                        "ec2:Describe*",
+                                        "ec2:AuthorizeSecurityGroupIngress"
+                                    ],
+                                    "Resource": "*"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+
+        "EcsIamRole": {
+            "Type": "AWS::IAM::Role",
+            "Properties": {
+                "AssumeRolePolicyDocument": {
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Principal": {
+                                "Service": [
+                                    "ec2.amazonaws.com"
+                                ]
+                            },
+                            "Action": [
+                                "sts:AssumeRole"
+                            ]
+                        }
+                    ]
+                },
+                "Path": "/",
+                "Policies": [
+                    {
+                        "PolicyName": "ecs-service",
+                        "PolicyDocument": {
+                            "Statement": [
+                                {
+                                    "Effect": "Allow",
+                                    "Action": [
+                                        "ecs:CreateCluster",
+                                        "ecs:RegisterContainerInstance",
+                                        "ecs:DeregisterContainerInstance",
+                                        "ecs:DiscoverPollEndpoint",
+                                        "ecs:Submit*",
+                                        "ecs:Poll",
+                                        "ecr:BatchCheckLayerAvailability",
+                                        "ecr:BatchGetImage",
+                                        "ecr:GetDownloadUrlForLayer",
+                                        "ecr:GetAuthorizationToken"
+                                    ],
+                                    "Resource": "*"
+                                },
+                                {
+                                    "Resource": "arn:aws:logs:*:*:*",
+                                    "Action": [
+                                        "logs:Create*",
+                                        "logs:PutLogEvents",
+                                        "logs:CreateLogGroup",
+                                        "logs:CreateLogStream",
+                                        "logs:DescribeLogStreams"
+                                    ],
+                                    "Effect": "Allow"
+                                }
+                            ]
+                        }
+                    }
+                ]
+            }
+        },
+
+        "EcsInstanceProfile": {
+            "Type": "AWS::IAM::InstanceProfile",
+            "Properties": {
+                "Path": "/",
+                "Roles": [
+                    {
+                        "Ref": "EcsIamRole"
+                    }
+                ]
+            }
+        }
+
+    },
+    "Outputs": {
+        "EcsCluster": {
+            "Description": "Ecs Cluster reference",
+            "Value": {
+                "Ref": "EcsCluster"
+            }
+        },
+
+        "EcsServiceRole": {
+            "Description": "Ecs Service Role reference",
+            "Value": {
+                "Ref": "EcsServiceRole"
+            }
+        }
+    }
+}
